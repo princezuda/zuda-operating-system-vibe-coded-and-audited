@@ -27,8 +27,35 @@ _start:
     call    cls
     mov     si, offset banner
     call    puts
+    mov     si, offset boot_msg
+    call    puts
+    # ~1.5s window: press ESC to drop to the DOS prompt instead of the desktop
+    xor     ah, ah
+    int     0x1A
+    mov     [boot_ticks], dx
+.boot_w:
+    mov     ah, 0x01
+    int     0x16
+    jz      .boot_nk
+    xor     ah, ah
+    int     0x16
+    cmp     al, 0x1B
+    je      shell_loop
+.boot_nk:
+    xor     ah, ah
+    int     0x1A
+    mov     ax, dx
+    sub     ax, [boot_ticks]
+    cmp     ax, 27
+    jb      .boot_w
+    jmp     do_desktop
 
 shell_loop:
+    # if we came from a desktop-launched app, return to the desktop
+    cmp     byte ptr [in_desktop], 0
+    je      .sl_prompt
+    jmp     do_desktop
+.sl_prompt:
     mov     si, offset prompt
     call    puts
     call    read_line
@@ -132,6 +159,90 @@ shell_loop:
     test    al, al
     jnz     do_basic
 
+    mov     di, offset cmdbuf
+    mov     si, offset kw_gui
+    call    match
+    test    al, al
+    jnz     do_gui
+
+    mov     di, offset cmdbuf
+    mov     si, offset kw_paint
+    call    match
+    test    al, al
+    jnz     do_paint
+
+    mov     di, offset cmdbuf
+    mov     si, offset kw_desktop
+    call    match
+    test    al, al
+    jnz     do_desktop
+
+    mov     di, offset cmdbuf
+    mov     si, offset kw_calc
+    call    match
+    test    al, al
+    jnz     do_calc
+
+    mov     di, offset cmdbuf
+    mov     si, offset kw_mem
+    call    match
+    test    al, al
+    jnz     do_mem
+
+    mov     di, offset cmdbuf
+    mov     si, offset kw_beep
+    call    match
+    test    al, al
+    jnz     do_beep
+
+    mov     di, offset cmdbuf
+    mov     si, offset kw_uptime
+    call    match
+    test    al, al
+    jnz     do_uptime
+
+    mov     di, offset cmdbuf
+    mov     si, offset kw_dice
+    call    match
+    test    al, al
+    jnz     do_dice
+
+    mov     di, offset cmdbuf
+    mov     si, offset kw_cowsay
+    call    match
+    test    al, al
+    jnz     do_cowsay
+
+    mov     di, offset cmdbuf
+    mov     si, offset kw_fortune
+    call    match
+    test    al, al
+    jnz     do_fortune
+
+    mov     di, offset cmdbuf
+    mov     si, offset kw_sysinfo
+    call    match
+    test    al, al
+    jnz     do_sysinfo
+
+    mov     di, offset cmdbuf
+    mov     si, offset kw_matrix
+    call    match
+    test    al, al
+    jnz     do_matrix
+
+    mov     di, offset cmdbuf
+    mov     si, offset kw_guess
+    call    match
+    test    al, al
+    jnz     do_guess
+
+    mov     di, offset cmdbuf
+    mov     si, offset kw_daw
+    call    match
+    test    al, al
+    jnz     do_daw
+
     # Unknown command - classic DOS error.
     mov     si, offset msg_bad
     call    puts
@@ -229,6 +340,243 @@ do_play:
     mov     si, offset tune
     call    play_music
     jmp     shell_loop
+
+# ---- extra commands (v10 feature pack) ----
+
+# CALC <expr> - evaluate an integer expression with the BASIC evaluator.
+do_calc:
+    mov     [pp], dx                # dx = argument pointer (from find_arg)
+    mov     byte ptr [err_flag], 0
+    call    eval_num
+    cmp     byte ptr [err_flag], 0
+    jne     .calc_err
+    push    ax
+    mov     si, offset msg_calc
+    call    puts
+    pop     ax
+    call    print_int
+    call    newline
+    jmp     shell_loop
+.calc_err:
+    mov     si, offset msg_calcerr
+    call    puts
+    jmp     shell_loop
+
+# MEM - conventional + extended memory.
+do_mem:
+    mov     si, offset msg_mem1
+    call    puts
+    int     0x12                    # AX = conventional KB
+    call    print_dec
+    mov     si, offset msg_kb
+    call    puts
+    mov     ah, 0x88
+    int     0x15                    # AX = extended KB (above 1MB)
+    jc      .mem_done
+    push    ax
+    mov     si, offset msg_mem2
+    call    puts
+    pop     ax
+    call    print_dec
+    mov     si, offset msg_kb
+    call    puts
+.mem_done:
+    jmp     shell_loop
+
+# BEEP - a short PC-speaker tone.
+do_beep:
+    mov     cx, 1000
+    call    sound_on
+    mov     word ptr [tmp_dur], 150
+    call    delay_ms
+    call    sound_off
+    jmp     shell_loop
+
+# UPTIME - seconds past midnight from the BIOS tick counter.
+do_uptime:
+    mov     si, offset msg_uptime
+    call    puts
+    xor     ah, ah
+    int     0x1A                    # CX:DX = ticks (~18.2/s)
+    test    cx, cx
+    jnz     .up_long
+    mov     ax, dx
+    xor     dx, dx
+    mov     bx, 18
+    div     bx                      # AX = seconds (fits in 16 bits under 1h)
+    call    print_dec
+    mov     si, offset msg_sec
+    call    puts
+    jmp     shell_loop
+.up_long:
+    mov     si, offset msg_uplong
+    call    puts
+    jmp     shell_loop
+
+# DICE - roll a six-sided die.
+do_dice:
+    call    seed_rng
+    call    rand
+    xor     dx, dx
+    mov     bx, 6
+    div     bx
+    mov     ax, dx
+    inc     ax
+    push    ax
+    mov     si, offset msg_dice
+    call    puts
+    pop     ax
+    call    print_dec
+    call    newline
+    jmp     shell_loop
+
+# COWSAY <text> - the cow says your argument.
+do_cowsay:
+    mov     si, offset cow_top
+    call    puts
+    mov     al, '<'
+    call    putc
+    mov     al, ' '
+    call    putc
+    mov     si, dx
+    call    puts
+    mov     al, ' '
+    call    putc
+    mov     al, '>'
+    call    putc
+    call    newline
+    mov     si, offset cow_body
+    call    puts
+    jmp     shell_loop
+
+# FORTUNE - a random one-liner.
+do_fortune:
+    mov     si, offset fortune_art
+    call    puts
+    call    seed_rng
+    call    rand
+    xor     dx, dx
+    mov     bx, 6
+    div     bx
+    mov     bx, dx
+    shl     bx, 1
+    mov     si, [fortune_tbl + bx]
+    call    puts
+    call    newline
+    jmp     shell_loop
+
+# SYSINFO - a quick system summary.
+do_sysinfo:
+    mov     si, offset msg_ver
+    call    puts
+    mov     si, offset msg_mem1
+    call    puts
+    int     0x12
+    call    print_dec
+    mov     si, offset msg_kb
+    call    puts
+    mov     si, offset msg_time
+    call    puts
+    mov     ah, 0x02
+    int     0x1A
+    mov     al, ch
+    call    print_bcd
+    mov     al, ':'
+    call    putc
+    mov     al, cl
+    call    print_bcd
+    call    newline
+    jmp     shell_loop
+
+# MATRIX - green "digital rain" in text mode until a key is pressed.
+do_matrix:
+    mov     ax, 0x0003
+    int     0x10
+    call    seed_rng
+    mov     ax, 0xB800
+    mov     es, ax
+.mx_loop:
+    mov     ah, 0x01
+    int     0x16
+    jnz     .mx_exit
+    mov     cx, 50
+.mx_batch:
+    push    cx
+    call    rand
+    xor     dx, dx
+    mov     bx, 2000
+    div     bx                      # DX = cell 0..1999
+    mov     di, dx
+    shl     di, 1
+    call    rand
+    mov     al, ah
+    and     al, 0x3F
+    add     al, 0x21
+    mov     es:[di], al
+    mov     byte ptr es:[di+1], 0x0A
+    pop     cx
+    dec     cx
+    jnz     .mx_batch
+    mov     word ptr [tmp_dur], 40
+    call    delay_ms
+    jmp     .mx_loop
+.mx_exit:
+    xor     ah, ah
+    int     0x16
+    call    cls
+    jmp     shell_loop
+
+# GUESS - guess my number 1..100.
+do_guess:
+    call    seed_rng
+    call    rand
+    xor     dx, dx
+    mov     bx, 100
+    div     bx
+    inc     dx
+    mov     [guess_target], dx
+    mov     si, offset msg_gintro
+    call    puts
+.guess_loop:
+    mov     si, offset msg_gprompt
+    call    puts
+    call    read_line
+    mov     al, [cmdbuf]
+    cmp     al, 'q'
+    je      .guess_exit
+    cmp     al, 'Q'
+    je      .guess_exit
+    mov     si, offset cmdbuf
+    call    str_to_int
+    mov     bx, [guess_target]
+    cmp     ax, bx
+    je      .guess_win
+    jl      .guess_low
+    mov     si, offset msg_ghigh
+    call    puts
+    jmp     .guess_loop
+.guess_low:
+    mov     si, offset msg_glow
+    call    puts
+    jmp     .guess_loop
+.guess_win:
+    mov     si, offset msg_gwin
+    call    puts
+.guess_exit:
+    jmp     shell_loop
+
+# seed_rng: seed the LCG from the BIOS tick counter.
+seed_rng:
+    push    ax
+    push    cx
+    push    dx
+    xor     ah, ah
+    int     0x1A
+    mov     [rng_state], dx
+    pop     dx
+    pop     cx
+    pop     ax
+    ret
 
 # ---- PC speaker (8253 PIT channel 2 + port 0x61) ----
 
@@ -1709,6 +2057,7 @@ out_word_lc:
 
 do_basic:
     call    cls
+    call    seed_rng
     mov     si, offset basic_intro
     call    puts
     mov     word ptr [prog_len], 0
@@ -1831,6 +2180,8 @@ basic_list:
 
 skip_sp:
     push    bx
+    push    ax                  # preserve AX: callers (ev_term/ev_arith) hold
+                                # the running value here while skipping spaces
 .ss_l:
     mov     bx, [pp]
     mov     al, [bx]
@@ -1838,6 +2189,7 @@ skip_sp:
     je      .ss_a
     cmp     al, 9
     je      .ss_a
+    pop     ax
     pop     bx
     ret
 .ss_a:
@@ -2289,10 +2641,10 @@ ev_arith:
 .er_l:
     call    skip_sp
     mov     bx, [pp]
-    mov     al, [bx]
-    cmp     al, '+'
+    mov     dl, [bx]
+    cmp     dl, '+'
     je      .er_add
-    cmp     al, '-'
+    cmp     dl, '-'
     je      .er_sub
     ret
 .er_add:
@@ -2316,14 +2668,17 @@ ev_term:
 .et_l:
     call    skip_sp
     mov     bx, [pp]
-    mov     al, [bx]
-    cmp     al, '*'
+    mov     dl, [bx]
+    cmp     dl, '*'
     je      .et_mul
-    cmp     al, '/'
+    cmp     dl, '/'
     je      .et_div
+    push    ax
     mov     di, offset kw_MOD
     call    try_kw
-    test    al, al
+    mov     dl, al
+    pop     ax
+    test    dl, dl
     jnz     .et_mod
     ret
 .et_mul:
@@ -2422,7 +2777,7 @@ ev_primary:
     mov     di, offset kw_ASC
     call    streq
     test    al, al
-    jz      .ep_var
+    jz      .ep_rnd
     mov     ax, [peek_end]
     mov     [pp], ax
     call    expect_lparen
@@ -2431,6 +2786,46 @@ ev_primary:
     mov     bx, offset sbuf1
     mov     al, [bx]
     xor     ah, ah
+    ret
+.ep_rnd:
+    mov     si, offset idbuf
+    mov     di, offset kw_RND
+    call    streq
+    test    al, al
+    jz      .ep_abs
+    mov     ax, [peek_end]
+    mov     [pp], ax
+    call    expect_lparen
+    call    eval_num
+    call    expect_rparen
+    push    ax
+    call    rand
+    pop     bx
+    test    bx, bx
+    jz      .ep_rndz
+    xor     dx, dx
+    div     bx
+    mov     ax, dx
+    inc     ax
+    ret
+.ep_rndz:
+    xor     ax, ax
+    ret
+.ep_abs:
+    mov     si, offset idbuf
+    mov     di, offset kw_ABS
+    call    streq
+    test    al, al
+    jz      .ep_var
+    mov     ax, [peek_end]
+    mov     [pp], ax
+    call    expect_lparen
+    call    eval_num
+    call    expect_rparen
+    test    ax, ax
+    jns     .ep_var2
+    neg     ax
+.ep_var2:
     ret
 .ep_var:
     mov     bx, [peek_end]
@@ -3501,6 +3896,1555 @@ find_matching_while:
     mov     ax, -1
     ret
 
+# ============================================================================
+#  GUI - a graphical desktop (VGA mode 13h, 320x200x256)
+#
+#  Stage 1: enter graphics mode, paint a desktop and a window with a title bar
+#  and text (rendered with the BIOS 8x8 font, which works in graphics modes).
+#  Mouse + draggable windows come next.
+# ============================================================================
+
+do_gui:
+    mov     ax, 0x0013          # 320x200, 256 colours
+    int     0x10
+
+    # desktop background (teal)
+    mov     word ptr [gx], 0
+    mov     word ptr [gy], 0
+    mov     word ptr [gw], 320
+    mov     word ptr [gh], 200
+    mov     byte ptr [gcolor], 3
+    call    grect
+
+    # window: white frame, black interior
+    mov     word ptr [gx], 48
+    mov     word ptr [gy], 36
+    mov     word ptr [gw], 224
+    mov     word ptr [gh], 128
+    mov     byte ptr [gcolor], 15
+    call    grect
+    mov     word ptr [gx], 50
+    mov     word ptr [gy], 38
+    mov     word ptr [gw], 220
+    mov     word ptr [gh], 124
+    mov     byte ptr [gcolor], 0
+    call    grect
+
+    # title bar (blue)
+    mov     word ptr [gx], 50
+    mov     word ptr [gy], 38
+    mov     word ptr [gw], 220
+    mov     word ptr [gh], 12
+    mov     byte ptr [gcolor], 1
+    call    grect
+
+    # title + content text
+    mov     byte ptr [gtcolor], 15
+    mov     byte ptr [grow], 5
+    mov     byte ptr [gcol], 7
+    mov     si, offset gui_title
+    call    gtext
+    mov     byte ptr [grow], 8
+    mov     byte ptr [gcol], 7
+    mov     si, offset gui_l1
+    call    gtext
+    mov     byte ptr [grow], 10
+    mov     byte ptr [gcol], 7
+    mov     si, offset gui_l2
+    call    gtext
+    mov     byte ptr [grow], 12
+    mov     byte ptr [gcol], 7
+    mov     si, offset gui_l3
+    call    gtext
+    mov     byte ptr [grow], 14
+    mov     byte ptr [gcol], 7
+    mov     si, offset gui_l4
+    call    gtext
+    mov     byte ptr [gtcolor], 14
+    mov     byte ptr [grow], 18
+    mov     byte ptr [gcol], 7
+    mov     si, offset gui_l5
+    call    gtext
+
+    # close button (red) at the top-right of the title bar
+    mov     word ptr [gx], 256
+    mov     word ptr [gy], 39
+    mov     word ptr [gw], 12
+    mov     word ptr [gh], 10
+    mov     byte ptr [gcolor], 12
+    call    grect
+    mov     byte ptr [gtcolor], 15
+    mov     byte ptr [grow], 4
+    mov     byte ptr [gcol], 32
+    mov     si, offset gui_x
+    call    gtext
+
+    # desktop icons
+    mov     word ptr [gx], 14
+    mov     word ptr [gy], 20
+    mov     word ptr [gw], 20
+    mov     word ptr [gh], 16
+    mov     byte ptr [gcolor], 14
+    call    grect
+    mov     word ptr [gx], 14
+    mov     word ptr [gy], 64
+    mov     word ptr [gw], 20
+    mov     word ptr [gh], 16
+    mov     byte ptr [gcolor], 11
+    call    grect
+
+    # taskbar
+    mov     word ptr [gx], 0
+    mov     word ptr [gy], 190
+    mov     word ptr [gw], 320
+    mov     word ptr [gh], 10
+    mov     byte ptr [gcolor], 7
+    call    grect
+    mov     byte ptr [gtcolor], 1
+    mov     byte ptr [grow], 24
+    mov     byte ptr [gcol], 1
+    mov     si, offset gui_task
+    call    gtext
+
+    # bring up the PS/2 mouse and run the cursor loop
+    call    mouse_init
+    mov     word ptr [mouse_x], 156
+    mov     word ptr [mouse_y], 96
+    mov     byte ptr [mouse_btn], 0
+    mov     ax, [mouse_x]
+    mov     [cur_drawn_x], ax
+    mov     ax, [mouse_y]
+    mov     [cur_drawn_y], ax
+    call    cursor_save
+    call    cursor_draw
+.gui_loop:
+    mov     ah, 0x01
+    int     0x16                # a key exits
+    jnz     .gui_exit
+    test    byte ptr [mouse_btn], 1   # left click: only the close box exits
+    jz      .gui_chkmove
+    mov     ax, [mouse_x]
+    cmp     ax, 256
+    jl      .gui_chkmove
+    cmp     ax, 268
+    jg      .gui_chkmove
+    mov     ax, [mouse_y]
+    cmp     ax, 38
+    jl      .gui_chkmove
+    cmp     ax, 50
+    jg      .gui_chkmove
+    jmp     .gui_exit
+.gui_chkmove:
+    mov     ax, [mouse_x]       # redraw only when the pointer moved
+    cmp     ax, [cur_drawn_x]
+    jne     .gui_move
+    mov     ax, [mouse_y]
+    cmp     ax, [cur_drawn_y]
+    jne     .gui_move
+    jmp     .gui_loop
+.gui_move:
+    call    cursor_restore
+    mov     ax, [mouse_x]
+    mov     [cur_drawn_x], ax
+    mov     ax, [mouse_y]
+    mov     [cur_drawn_y], ax
+    call    cursor_save
+    call    cursor_draw
+    jmp     .gui_loop
+.gui_exit:
+    call    mouse_off
+    mov     ax, 0x0003
+    int     0x10
+    mov     ax, cs
+    mov     es, ax
+    jmp     shell_loop
+
+# grect: fill rectangle [gx,gy,gw,gh] with colour [gcolor]. ES -> 0xA000.
+grect:
+    mov     ax, 0xA000
+    mov     es, ax
+    mov     cx, [gh]
+    mov     bx, [gy]
+.grc_row:
+    test    cx, cx
+    jz      .grc_done
+    mov     ax, bx
+    mov     dx, 320
+    mul     dx
+    add     ax, [gx]
+    mov     di, ax
+    mov     al, [gcolor]
+    push    cx
+    mov     cx, [gw]
+    rep     stosb
+    pop     cx
+    inc     bx
+    dec     cx
+    jmp     .grc_row
+.grc_done:
+    ret
+
+# gtext: print the string at SI starting at char cell [grow],[gcol] in colour
+# [gtcolor], using the BIOS 8x8 font (works in graphics mode).
+gtext:
+    push    si
+    mov     ah, 0x02
+    mov     bh, 0
+    mov     dh, [grow]
+    mov     dl, [gcol]
+    int     0x10
+    pop     si
+.gtx_l:
+    lodsb
+    test    al, al
+    jz      .gtx_d
+    mov     ah, 0x0E
+    mov     bl, [gtcolor]
+    mov     bh, 0
+    int     0x10
+    jmp     .gtx_l
+.gtx_d:
+    ret
+
+# get_font: fetch the ROM 8x8 font pointer (chars 0-127) into font_seg:font_off.
+get_font:
+    push    bp
+    mov     ax, 0x1130
+    mov     bh, 0x03
+    int     0x10                # -> ES:BP = font, 8 bytes/char
+    mov     [font_seg], es
+    mov     [font_off], bp
+    pop     bp
+    ret
+
+# draw_char: render AL as an 8x8 glyph at [gpx],[gpy] in colour [gtcolor] with a
+# TRANSPARENT background (only set pixels are drawn).
+draw_char:
+    push    ax
+    xor     ah, ah
+    mov     bx, ax
+    shl     bx, 3               # char * 8
+    add     bx, [font_off]
+    mov     ax, [font_seg]
+    mov     es, ax
+    mov     si, bx
+    mov     di, offset glyphbuf
+    mov     cx, 8
+.dch_copy:
+    mov     al, es:[si]
+    mov     [di], al
+    inc     si
+    inc     di
+    dec     cx
+    jnz     .dch_copy
+    pop     ax
+    mov     ax, 0xA000
+    mov     es, ax
+    xor     bp, bp
+.dch_row:
+    cmp     bp, 8
+    jae     .dch_done
+    mov     ax, [gpy]
+    add     ax, bp
+    mov     dx, 320
+    mul     dx
+    add     ax, [gpx]
+    mov     di, ax
+    mov     bx, offset glyphbuf
+    add     bx, bp
+    mov     dl, [bx]            # this row's 8 bits
+    mov     cx, 8
+    mov     ah, 0x80            # leftmost pixel first
+.dch_col:
+    test    dl, ah
+    jz      .dch_skip
+    mov     al, [gtcolor]
+    mov     es:[di], al
+.dch_skip:
+    inc     di
+    shr     ah, 1
+    dec     cx
+    jnz     .dch_col
+    inc     bp
+    jmp     .dch_row
+.dch_done:
+    ret
+
+# gtext_t: draw the string at SI at pixel [gpx],[gpy] in [gtcolor], transparent.
+gtext_t:
+    mov     al, [si]
+    test    al, al
+    jz      .gtt_d
+    push    si
+    call    draw_char
+    pop     si
+    add     word ptr [gpx], 8
+    inc     si
+    jmp     gtext_t
+.gtt_d:
+    ret
+
+# ---- PS/2 mouse (8042 controller + IRQ12 ISR, polled cursor loop) ----
+
+# kbc_wait_in: wait until the controller input buffer is empty (status bit 1=0).
+kbc_wait_in:
+    push    cx
+    mov     cx, 0xFFFF
+.kwi_l:
+    in      al, 0x64
+    test    al, 2
+    jz      .kwi_d
+    loop    .kwi_l
+.kwi_d:
+    pop     cx
+    ret
+
+# kbc_wait_out: wait until output buffer is full (status bit 0=1).
+kbc_wait_out:
+    push    cx
+    mov     cx, 0xFFFF
+.kwo_l:
+    in      al, 0x64
+    test    al, 1
+    jnz     .kwo_d
+    loop    .kwo_l
+.kwo_d:
+    pop     cx
+    ret
+
+# mouse_init: install the IRQ12 handler, unmask the PIC, enable the aux device
+# and data reporting.
+mouse_init:
+    mov     byte ptr [mpkt_idx], 0
+    # install ISR at IVT vector 0x74 (IRQ12)
+    cli
+    xor     ax, ax
+    mov     es, ax
+    mov     word ptr es:[0x74*4], offset mouse_isr
+    mov     word ptr es:[0x74*4+2], cs
+    # unmask IRQ12 (slave bit 4) and IRQ2 cascade (master bit 2)
+    in      al, 0xA1
+    and     al, 0xEF
+    out     0xA1, al
+    in      al, 0x21
+    and     al, 0xFB
+    out     0x21, al
+    # enable the auxiliary (mouse) device
+    call    kbc_wait_in
+    mov     al, 0xA8
+    out     0x64, al
+    # read the controller config byte, enable IRQ12 + mouse clock
+    call    kbc_wait_in
+    mov     al, 0x20
+    out     0x64, al
+    call    kbc_wait_out
+    in      al, 0x60
+    or      al, 0x02            # enable IRQ12
+    and     al, 0xDF            # enable mouse clock
+    mov     bl, al
+    call    kbc_wait_in
+    mov     al, 0x60
+    out     0x64, al
+    call    kbc_wait_in
+    mov     al, bl
+    out     0x60, al
+    # enable data reporting (0xF4) on the mouse
+    call    kbc_wait_in
+    mov     al, 0xD4
+    out     0x64, al
+    call    kbc_wait_in
+    mov     al, 0xF4
+    out     0x60, al
+    call    kbc_wait_out
+    in      al, 0x60            # eat the ACK
+    sti
+    ret
+
+# mouse_off: disable reporting and mask IRQ12 again.
+mouse_off:
+    # mask IRQ12 first so the ISR stops firing during teardown
+    in      al, 0xA1
+    or      al, 0x10
+    out     0xA1, al
+    # tell the mouse to stop reporting: 0xD4 (address aux), then 0xF5 to the
+    # DATA port (0x60) - the original bug sent it to 0x64, so the mouse kept
+    # streaming and flooded the keyboard controller after exit.
+    call    kbc_wait_in
+    mov     al, 0xD4
+    out     0x64, al
+    call    kbc_wait_in
+    mov     al, 0xF5
+    out     0x60, al
+    call    kbc_wait_out
+    in      al, 0x60            # eat the ACK
+    # drain any leftover bytes from the controller output buffer
+.moff_flush:
+    in      al, 0x64
+    test    al, 1
+    jz      .moff_done
+    in      al, 0x60
+    jmp     .moff_flush
+.moff_done:
+    ret
+
+# mouse_isr: IRQ12 handler. Reads one byte, assembles 3-byte packets, applies
+# movement, and sends EOI to both PICs.
+mouse_isr:
+    push    ax
+    push    bx
+    push    ds
+    mov     ax, 0x1000
+    mov     ds, ax
+    in      al, 0x64
+    test    al, 0x20            # is it really aux (mouse) data?
+    jz      .isr_eoi
+    in      al, 0x60
+    mov     bl, [mpkt_idx]
+    cmp     bl, 0
+    je      .isr_b0
+    cmp     bl, 1
+    je      .isr_b1
+    mov     [mpkt2], al
+    mov     byte ptr [mpkt_idx], 0
+    call    mouse_apply
+    jmp     .isr_eoi
+.isr_b0:
+    test    al, 0x08            # sync bit must be set on byte 0
+    jz      .isr_eoi
+    mov     [mpkt0], al
+    mov     byte ptr [mpkt_idx], 1
+    jmp     .isr_eoi
+.isr_b1:
+    mov     [mpkt1], al
+    mov     byte ptr [mpkt_idx], 2
+.isr_eoi:
+    mov     al, 0x20
+    out     0xA0, al            # EOI to slave PIC
+    out     0x20, al            # EOI to master PIC
+    pop     ds
+    pop     bx
+    pop     ax
+    iret
+
+# mouse_apply: turn the completed packet into a new cursor position + buttons.
+mouse_apply:
+    mov     al, [mpkt0]
+    and     al, 7
+    mov     [mouse_btn], al
+    mov     al, [mpkt1]
+    cbw                         # sign-extend dx
+    add     [mouse_x], ax
+    mov     ax, [mouse_x]
+    test    ax, ax
+    jns     .ma_xhi
+    mov     word ptr [mouse_x], 0
+    jmp     .ma_y
+.ma_xhi:
+    cmp     ax, 312
+    jle     .ma_y
+    mov     word ptr [mouse_x], 312
+.ma_y:
+    mov     al, [mpkt2]
+    cbw                         # sign-extend dy
+    sub     [mouse_y], ax       # screen Y is inverted vs PS/2
+    mov     ax, [mouse_y]
+    test    ax, ax
+    jns     .ma_yhi
+    mov     word ptr [mouse_y], 0
+    ret
+.ma_yhi:
+    cmp     ax, 188
+    jle     .ma_done
+    mov     word ptr [mouse_y], 188
+.ma_done:
+    ret
+
+# cursor_save: copy the 8x12 area under the cursor into cur_bg.
+cursor_save:
+    mov     ax, 0xA000
+    mov     es, ax
+    mov     si, offset cur_bg
+    xor     bp, bp
+.cs_row:
+    cmp     bp, 12
+    jae     .cs_done
+    mov     ax, [cur_drawn_y]
+    add     ax, bp
+    mov     bx, 320
+    mul     bx
+    add     ax, [cur_drawn_x]
+    mov     di, ax
+    mov     cx, 8
+.cs_col:
+    mov     al, es:[di]
+    mov     [si], al
+    inc     si
+    inc     di
+    dec     cx
+    jnz     .cs_col
+    inc     bp
+    jmp     .cs_row
+.cs_done:
+    ret
+
+# cursor_restore: write cur_bg back to the screen.
+cursor_restore:
+    mov     ax, 0xA000
+    mov     es, ax
+    mov     si, offset cur_bg
+    xor     bp, bp
+.cr_row:
+    cmp     bp, 12
+    jae     .cr_done
+    mov     ax, [cur_drawn_y]
+    add     ax, bp
+    mov     bx, 320
+    mul     bx
+    add     ax, [cur_drawn_x]
+    mov     di, ax
+    mov     cx, 8
+.cr_col:
+    mov     al, [si]
+    mov     es:[di], al
+    inc     si
+    inc     di
+    dec     cx
+    jnz     .cr_col
+    inc     bp
+    jmp     .cr_row
+.cr_done:
+    ret
+
+# cursor_draw: draw the arrow sprite (0=transparent, 1=black, 2=white).
+cursor_draw:
+    mov     ax, 0xA000
+    mov     es, ax
+    mov     si, offset cur_sprite
+    xor     bp, bp
+.cd_row:
+    cmp     bp, 12
+    jae     .cd_done
+    mov     ax, [cur_drawn_y]
+    add     ax, bp
+    mov     bx, 320
+    mul     bx
+    add     ax, [cur_drawn_x]
+    mov     di, ax
+    mov     cx, 8
+.cd_col:
+    mov     al, [si]
+    test    al, al
+    jz      .cd_skip
+    cmp     al, 1
+    jne     .cd_white
+    mov     byte ptr es:[di], 0
+    jmp     .cd_skip
+.cd_white:
+    mov     byte ptr es:[di], 15
+.cd_skip:
+    inc     si
+    inc     di
+    dec     cx
+    jnz     .cd_col
+    inc     bp
+    jmp     .cd_row
+.cd_done:
+    ret
+
+# ============================================================================
+#  PAINT - a Paintbrush-style drawing program (VGA mode 13h + PS/2 mouse)
+#
+#  Hold the left button to draw with a 3x3 brush in the current colour. Click
+#  a swatch in the 16-colour palette along the bottom to change colour. Press
+#  C to clear, ESC to quit. Reuses the GUI's mouse driver and cursor.
+# ============================================================================
+
+do_paint:
+    mov     ax, 0x0013
+    int     0x10
+    # white canvas (top rows; palette occupies the bottom, within cursor reach)
+    mov     word ptr [gx], 0
+    mov     word ptr [gy], 0
+    mov     word ptr [gw], 320
+    mov     word ptr [gh], 178
+    mov     byte ptr [gcolor], 15
+    call    grect
+    call    draw_palette
+    mov     byte ptr [current_color], 0
+    mov     byte ptr [painting], 0
+    mov     byte ptr [prev_btn], 0
+
+    call    mouse_init
+    mov     word ptr [mouse_x], 156
+    mov     word ptr [mouse_y], 90
+    mov     byte ptr [mouse_btn], 0
+    mov     ax, [mouse_x]
+    mov     [cur_drawn_x], ax
+    mov     ax, [mouse_y]
+    mov     [cur_drawn_y], ax
+    call    cursor_save
+    call    cursor_draw
+
+.paint_loop:
+    # keyboard: ESC quits, C clears
+    mov     ah, 0x01
+    int     0x16
+    jz      .pl_btn
+    xor     ah, ah
+    int     0x16
+    cmp     al, 0x1B
+    je      .paint_exit
+    cmp     al, 'c'
+    je      .pl_clear
+    cmp     al, 'C'
+    je      .pl_clear
+    test    byte ptr [mouse_btn], 2   # right click also quits
+    jnz     .paint_exit
+.pl_btn:
+    # edge-detect the left button
+    mov     al, [mouse_btn]
+    and     al, 1
+    mov     [cur_btn], al
+    cmp     al, [prev_btn]
+    je      .pl_act
+    test    byte ptr [cur_btn], 1
+    jz      .pl_up_edge
+    # button just pressed
+    mov     ax, [mouse_y]
+    cmp     ax, 178
+    jl      .pl_start_paint
+    # in the palette: pick a colour (x / 20)
+    mov     ax, [mouse_x]
+    mov     bl, 20
+    div     bl
+    mov     [current_color], al
+    jmp     .pl_act
+.pl_start_paint:
+    call    cursor_restore      # hide the arrow while drawing
+    mov     byte ptr [painting], 1
+    jmp     .pl_act
+.pl_up_edge:
+    cmp     byte ptr [painting], 1
+    jne     .pl_act
+    mov     byte ptr [painting], 0
+    mov     ax, [mouse_x]
+    mov     [cur_drawn_x], ax
+    mov     ax, [mouse_y]
+    mov     [cur_drawn_y], ax
+    call    cursor_save
+    call    cursor_draw
+.pl_act:
+    mov     al, [cur_btn]
+    mov     [prev_btn], al
+    cmp     byte ptr [painting], 1
+    jne     .pl_movecursor
+    # painting: stamp the brush (canvas area only)
+    mov     ax, [mouse_y]
+    cmp     ax, 176
+    jge     .paint_loop
+    call    paint_brush
+    jmp     .paint_loop
+.pl_movecursor:
+    mov     ax, [mouse_x]
+    cmp     ax, [cur_drawn_x]
+    jne     .pl_move
+    mov     ax, [mouse_y]
+    cmp     ax, [cur_drawn_y]
+    jne     .pl_move
+    jmp     .paint_loop
+.pl_move:
+    call    cursor_restore
+    mov     ax, [mouse_x]
+    mov     [cur_drawn_x], ax
+    mov     ax, [mouse_y]
+    mov     [cur_drawn_y], ax
+    call    cursor_save
+    call    cursor_draw
+    jmp     .paint_loop
+.pl_clear:
+    mov     word ptr [gx], 0
+    mov     word ptr [gy], 0
+    mov     word ptr [gw], 320
+    mov     word ptr [gh], 178
+    mov     byte ptr [gcolor], 15
+    call    grect
+    call    cursor_save
+    call    cursor_draw
+    jmp     .paint_loop
+.paint_exit:
+    call    mouse_off
+    mov     ax, 0x0003
+    int     0x10
+    mov     ax, cs
+    mov     es, ax
+    jmp     shell_loop
+
+# draw_palette: 16 colour swatches along the bottom (each 20px wide).
+draw_palette:
+    xor     bp, bp
+.dp_l:
+    cmp     bp, 16
+    jae     .dp_done
+    mov     ax, bp
+    mov     bx, 20
+    mul     bx
+    mov     [gx], ax
+    mov     word ptr [gy], 178
+    mov     word ptr [gw], 20
+    mov     word ptr [gh], 12
+    mov     ax, bp
+    mov     [gcolor], al
+    call    grect
+    inc     bp
+    jmp     .dp_l
+.dp_done:
+    ret
+
+# paint_brush: stamp a 3x3 block of [current_color] at the cursor.
+paint_brush:
+    mov     ax, 0xA000
+    mov     es, ax
+    xor     bp, bp
+.pb_row:
+    cmp     bp, 3
+    jae     .pb_done
+    mov     ax, [mouse_y]
+    add     ax, bp
+    mov     bx, 320
+    mul     bx
+    add     ax, [mouse_x]
+    mov     di, ax
+    mov     al, [current_color]
+    mov     cx, 3
+    rep     stosb
+    inc     bp
+    jmp     .pb_row
+.pb_done:
+    ret
+
+# ============================================================================
+#  DESKTOP - a Windows 95-style shell (taskbar, Start menu, clock, 3D windows)
+#
+#  Not the actual 32-bit multitasking OS (impossible here) - the recognizable
+#  Win95 *desktop experience*: a Start button that opens a menu launching the
+#  apps, a taskbar clock from the RTC, and grey 3D-beveled window chrome.
+# ============================================================================
+
+# draw_bevel: 3D rectangle [btx,bty,btw,bth], grey face, [bev_tl] top/left edge,
+# [bev_br] bottom/right edge.
+draw_bevel:
+    mov     ax, [btx]
+    mov     [gx], ax
+    mov     ax, [bty]
+    mov     [gy], ax
+    mov     ax, [btw]
+    mov     [gw], ax
+    mov     ax, [bth]
+    mov     [gh], ax
+    mov     byte ptr [gcolor], 7
+    call    grect
+    mov     ax, [btx]
+    mov     [gx], ax
+    mov     ax, [bty]
+    mov     [gy], ax
+    mov     ax, [btw]
+    mov     [gw], ax
+    mov     word ptr [gh], 1
+    mov     al, [bev_tl]
+    mov     [gcolor], al
+    call    grect
+    mov     ax, [btx]
+    mov     [gx], ax
+    mov     ax, [bty]
+    mov     [gy], ax
+    mov     word ptr [gw], 1
+    mov     ax, [bth]
+    mov     [gh], ax
+    mov     al, [bev_tl]
+    mov     [gcolor], al
+    call    grect
+    mov     ax, [btx]
+    mov     [gx], ax
+    mov     ax, [bty]
+    add     ax, [bth]
+    dec     ax
+    mov     [gy], ax
+    mov     ax, [btw]
+    mov     [gw], ax
+    mov     word ptr [gh], 1
+    mov     al, [bev_br]
+    mov     [gcolor], al
+    call    grect
+    mov     ax, [btx]
+    add     ax, [btw]
+    dec     ax
+    mov     [gx], ax
+    mov     ax, [bty]
+    mov     [gy], ax
+    mov     word ptr [gw], 1
+    mov     ax, [bth]
+    mov     [gh], ax
+    mov     al, [bev_br]
+    mov     [gcolor], al
+    call    grect
+    ret
+
+draw_raised:
+    mov     byte ptr [bev_tl], 15
+    mov     byte ptr [bev_br], 8
+    call    draw_bevel
+    ret
+
+draw_sunken:
+    mov     byte ptr [bev_tl], 8
+    mov     byte ptr [bev_br], 15
+    call    draw_bevel
+    ret
+
+# get_time_str: build "HH:MM" from the RTC into clockbuf.
+get_time_str:
+    mov     ah, 0x02
+    int     0x1A                # CH=hours CL=min (BCD)
+    mov     al, ch
+    mov     bl, al
+    shr     al, 4
+    add     al, '0'
+    mov     [clockbuf+0], al
+    mov     al, bl
+    and     al, 0x0F
+    add     al, '0'
+    mov     [clockbuf+1], al
+    mov     byte ptr [clockbuf+2], ':'
+    mov     al, cl
+    mov     bl, al
+    shr     al, 4
+    add     al, '0'
+    mov     [clockbuf+3], al
+    mov     al, cl
+    and     al, 0x0F
+    add     al, '0'
+    mov     [clockbuf+4], al
+    mov     byte ptr [clockbuf+5], 0
+    ret
+
+# draw_taskbar: the grey taskbar, raised Start button, and sunken clock.
+draw_taskbar:
+    mov     word ptr [gx], 0
+    mov     word ptr [gy], 182
+    mov     word ptr [gw], 320
+    mov     word ptr [gh], 18
+    mov     byte ptr [gcolor], 7
+    call    grect
+    mov     word ptr [gx], 0
+    mov     word ptr [gy], 182
+    mov     word ptr [gw], 320
+    mov     word ptr [gh], 1
+    mov     byte ptr [gcolor], 15
+    call    grect
+    # Start button
+    mov     word ptr [btx], 2
+    mov     word ptr [bty], 184
+    mov     word ptr [btw], 50
+    mov     word ptr [bth], 14
+    call    draw_raised
+    mov     byte ptr [gtcolor], 0
+    mov     word ptr [gpy], 184
+    mov     word ptr [gpx], 10
+    mov     si, offset ds_start
+    call    gtext_t
+    # clock panel
+    mov     word ptr [btx], 266
+    mov     word ptr [bty], 184
+    mov     word ptr [btw], 52
+    mov     word ptr [bth], 14
+    call    draw_sunken
+    call    get_time_str
+    mov     byte ptr [gtcolor], 0
+    mov     word ptr [gpy], 184
+    mov     word ptr [gpx], 274
+    mov     si, offset clockbuf
+    call    gtext_t
+    ret
+
+# draw_desk: paint the whole desktop (background, icons, window, taskbar).
+draw_desk:
+    mov     word ptr [gx], 0
+    mov     word ptr [gy], 0
+    mov     word ptr [gw], 320
+    mov     word ptr [gh], 182
+    mov     byte ptr [gcolor], 3
+    call    grect
+    mov     byte ptr [gtcolor], 15
+    mov     word ptr [gpx], 118
+    mov     word ptr [gpy], 4
+    mov     si, offset ds_hint
+    call    gtext_t
+    call    draw_icons
+    call    draw_taskbar
+    ret
+
+# draw_icons: 8 app icons (coloured box + label) at their stored positions.
+draw_icons:
+    mov     word ptr [icon_i], 0
+.di_l:
+    mov     bx, [icon_i]
+    cmp     bx, 9
+    jae     .di_done
+    shl     bx, 1
+    mov     ax, [icon_x + bx]
+    mov     [gx], ax
+    mov     ax, [icon_y + bx]
+    mov     [gy], ax
+    mov     word ptr [gw], 28
+    mov     word ptr [gh], 22
+    mov     bx, [icon_i]
+    mov     al, [ic_colors + bx]
+    mov     [gcolor], al
+    call    grect
+    mov     bx, [icon_i]
+    shl     bx, 1
+    mov     ax, [icon_x + bx]
+    mov     [gpx], ax
+    mov     ax, [icon_y + bx]
+    add     ax, 24
+    mov     [gpy], ax
+    mov     byte ptr [gtcolor], 15
+    mov     bx, [icon_i]
+    shl     bx, 1
+    mov     si, [ic_labels + bx]
+    call    gtext_t
+    inc     word ptr [icon_i]
+    jmp     .di_l
+.di_done:
+    ret
+
+# init_icons: lay the 9 icons out in a 3-column grid.
+init_icons:
+    mov     word ptr [icon_i], 0
+.ii_l:
+    mov     ax, [icon_i]
+    cmp     ax, 9
+    jae     .ii_done
+    xor     dx, dx
+    mov     bx, 3
+    div     bx                      # AX = row (i/3), DX = col (i%3)
+    push    ax
+    mov     ax, dx
+    mov     bx, 68
+    mul     bx
+    add     ax, 12
+    mov     bx, [icon_i]
+    shl     bx, 1
+    mov     [icon_x + bx], ax
+    pop     ax
+    mov     bx, 44
+    mul     bx
+    add     ax, 6
+    mov     bx, [icon_i]
+    shl     bx, 1
+    mov     [icon_y + bx], ax
+    inc     word ptr [icon_i]
+    jmp     .ii_l
+.ii_done:
+    ret
+
+# icon_hit: AX = icon index under (mouse_x,mouse_y), or -1.
+icon_hit:
+    mov     word ptr [icon_i], 0
+.ih_l:
+    mov     bx, [icon_i]
+    cmp     bx, 9
+    jae     .ih_no
+    shl     bx, 1
+    mov     dx, [icon_x + bx]
+    mov     cx, [mouse_x]
+    cmp     cx, dx
+    jb      .ih_next
+    add     dx, 44
+    cmp     cx, dx
+    jae     .ih_next
+    mov     bx, [icon_i]
+    shl     bx, 1
+    mov     dx, [icon_y + bx]
+    mov     cx, [mouse_y]
+    cmp     cx, dx
+    jb      .ih_next
+    add     dx, 34
+    cmp     cx, dx
+    jae     .ih_next
+    mov     ax, [icon_i]
+    ret
+.ih_next:
+    inc     word ptr [icon_i]
+    jmp     .ih_l
+.ih_no:
+    mov     ax, -1
+    ret
+
+# icon_launch: AX = icon index -> tear down the mouse and jump to that app.
+icon_launch:
+    mov     [icon_i], ax
+    mov     byte ptr [in_desktop], 1   # apps launched here return to the desktop
+    call    mouse_off
+    mov     ax, [icon_i]
+    cmp     ax, 1
+    je      .il_paint
+    cmp     ax, 3
+    je      .il_basic
+    cmp     ax, 4
+    je      .il_eliza
+    cmp     ax, 5
+    je      .il_matrix
+    cmp     ax, 8
+    je      .il_daw
+    # text-mode apps: snake(0), edit(2), guess(6), MS-DOS(7)
+    mov     bx, ax
+    mov     ax, 0x0003
+    int     0x10
+    mov     ax, cs
+    mov     es, ax
+    cmp     bx, 0
+    je      do_snake
+    cmp     bx, 2
+    je      do_edit
+    cmp     bx, 6
+    je      do_guess
+    mov     byte ptr [in_desktop], 0   # MS-DOS icon -> stay at the DOS prompt
+    jmp     shell_loop
+.il_paint:
+    jmp     do_paint
+.il_basic:
+    jmp     do_basic
+.il_eliza:
+    jmp     do_eliza
+.il_matrix:
+    jmp     do_matrix
+.il_daw:
+    jmp     do_daw
+
+
+
+do_desktop:
+    mov     ax, 0x0013
+    int     0x10
+    call    get_font
+    cmp     byte ptr [desktop_inited], 0   # lay out icons only on first entry,
+    jne     .dt_noinit                     # so dragged positions persist
+    call    init_icons
+    mov     byte ptr [desktop_inited], 1
+.dt_noinit:
+    call    draw_desk
+    call    mouse_init
+    mov     word ptr [mouse_x], 156
+    mov     word ptr [mouse_y], 100
+    mov     byte ptr [mouse_btn], 0
+    mov     byte ptr [prev_btn], 0
+    mov     byte ptr [menu_open], 0
+    mov     word ptr [drag_icon], -1
+    mov     ax, [mouse_x]
+    mov     [cur_drawn_x], ax
+    mov     ax, [mouse_y]
+    mov     [cur_drawn_y], ax
+    call    cursor_save
+    call    cursor_draw
+.dt_loop:
+    mov     ah, 0x01
+    int     0x16
+    jnz     .dt_exit
+    mov     al, [mouse_btn]
+    and     al, 1
+    mov     [cur_btn], al
+    cmp     al, [prev_btn]
+    je      .dt_held
+    mov     [prev_btn], al
+    test    byte ptr [cur_btn], 1
+    jnz     .dt_press
+    call    desk_release
+    jmp     .dt_move
+.dt_press:
+    call    desk_press
+    jmp     .dt_move
+.dt_held:
+    cmp     word ptr [drag_icon], -1
+    je      .dt_move
+    call    drag_move
+.dt_move:
+    mov     ax, [mouse_x]
+    cmp     ax, [cur_drawn_x]
+    jne     .dt_redraw
+    mov     ax, [mouse_y]
+    cmp     ax, [cur_drawn_y]
+    jne     .dt_redraw
+    jmp     .dt_loop
+.dt_redraw:
+    call    cursor_restore
+    mov     ax, [mouse_x]
+    mov     [cur_drawn_x], ax
+    mov     ax, [mouse_y]
+    mov     [cur_drawn_y], ax
+    call    cursor_save
+    call    cursor_draw
+    jmp     .dt_loop
+.dt_exit:
+    call    mouse_off
+    mov     ax, 0x0003
+    int     0x10
+    mov     ax, cs
+    mov     es, ax
+    mov     byte ptr [in_desktop], 0   # leaving the desktop -> DOS prompt
+    jmp     shell_loop
+
+# desk_press: left button just went down.
+desk_press:
+    cmp     byte ptr [menu_open], 1
+    je      .dpr_menu
+    mov     ax, [mouse_x]
+    cmp     ax, 52
+    jae     .dpr_nostart
+    mov     ax, [mouse_y]
+    cmp     ax, 184
+    jb      .dpr_nostart
+    call    open_menu
+    ret
+.dpr_nostart:
+    call    icon_hit
+    cmp     ax, -1
+    je      .dpr_done
+    mov     [drag_icon], ax
+    mov     bx, ax
+    shl     bx, 1
+    mov     dx, [mouse_x]
+    sub     dx, [icon_x + bx]
+    mov     [grab_dx], dx
+    mov     dx, [mouse_y]
+    sub     dx, [icon_y + bx]
+    mov     [grab_dy], dx
+    mov     ax, [mouse_x]
+    mov     [press_mx], ax
+    mov     ax, [mouse_y]
+    mov     [press_my], ax
+.dpr_done:
+    ret
+.dpr_menu:
+    call    menu_click
+    ret
+
+# desk_release: left button just went up. A barely-moved press = a click
+# (launch the icon); a moved press = a drag (just drop it).
+desk_release:
+    cmp     word ptr [drag_icon], -1
+    je      .dr_done
+    mov     ax, [mouse_x]
+    sub     ax, [press_mx]
+    test    ax, ax
+    jns     .dr_ax
+    neg     ax
+.dr_ax:
+    mov     dx, [mouse_y]
+    sub     dx, [press_my]
+    test    dx, dx
+    jns     .dr_dx
+    neg     dx
+.dr_dx:
+    add     ax, dx
+    cmp     ax, 5
+    ja      .dr_drop
+    mov     ax, [drag_icon]
+    mov     word ptr [drag_icon], -1
+    jmp     icon_launch
+.dr_drop:
+    mov     word ptr [drag_icon], -1
+.dr_done:
+    ret
+
+# drag_move: button held over a grabbed icon -> move it and repaint.
+drag_move:
+    mov     bx, [drag_icon]
+    shl     bx, 1
+    mov     ax, [mouse_x]
+    sub     ax, [grab_dx]
+    test    ax, ax
+    jns     .drm_x1
+    xor     ax, ax
+.drm_x1:
+    cmp     ax, 290
+    jbe     .drm_x2
+    mov     ax, 290
+.drm_x2:
+    mov     cx, ax
+    mov     ax, [mouse_y]
+    sub     ax, [grab_dy]
+    test    ax, ax
+    jns     .drm_y1
+    xor     ax, ax
+.drm_y1:
+    cmp     ax, 150
+    jbe     .drm_y2
+    mov     ax, 150
+.drm_y2:
+    mov     dx, ax
+    cmp     cx, [icon_x + bx]
+    jne     .drm_upd
+    cmp     dx, [icon_y + bx]
+    jne     .drm_upd
+    ret
+.drm_upd:
+    mov     [icon_x + bx], cx
+    mov     [icon_y + bx], dx
+    call    draw_desk
+    mov     ax, [mouse_x]
+    mov     [cur_drawn_x], ax
+    mov     ax, [mouse_y]
+    mov     [cur_drawn_y], ax
+    call    cursor_save
+    call    cursor_draw
+    ret
+
+# open_menu: draw the Start menu panel and its items.
+open_menu:
+    call    cursor_restore      # lift the cursor before painting the menu
+    mov     byte ptr [menu_open], 1
+    # menu panel (raised) above the Start button
+    mov     word ptr [btx], 2
+    mov     word ptr [bty], 78
+    mov     word ptr [btw], 116
+    mov     word ptr [bth], 104
+    call    draw_raised
+    # blue branding stripe down the left
+    mov     word ptr [gx], 4
+    mov     word ptr [gy], 80
+    mov     word ptr [gw], 14
+    mov     word ptr [gh], 100
+    mov     byte ptr [gcolor], 1
+    call    grect
+    # items
+    mov     byte ptr [gtcolor], 0
+    mov     word ptr [gpx], 24
+    mov     word ptr [gpy], 84
+    mov     si, offset ds_m1
+    call    gtext_t
+    mov     word ptr [gpx], 24
+    mov     word ptr [gpy], 108
+    mov     si, offset ds_m2
+    call    gtext_t
+    mov     word ptr [gpx], 24
+    mov     word ptr [gpy], 132
+    mov     si, offset ds_m3
+    call    gtext_t
+    mov     word ptr [gpx], 24
+    mov     word ptr [gpy], 156
+    mov     si, offset ds_m4
+    call    gtext_t
+    # the cursor was painted over; re-establish it
+    call    cursor_save
+    call    cursor_draw
+    ret
+
+# menu_click: a click while the Start menu is open. Items occupy x 20..116;
+# rows ~80,104,128,152 (24px tall each). Anything else closes the menu.
+menu_click:
+    mov     byte ptr [menu_open], 0
+    mov     ax, [mouse_x]
+    cmp     ax, 20
+    jb      .mc_close
+    cmp     ax, 118
+    jae     .mc_close
+    mov     ax, [mouse_y]
+    cmp     ax, 78
+    jb      .mc_close
+    cmp     ax, 102
+    jae     .mc_i2
+    jmp     .mc_paint           # row 1: Paint
+.mc_i2:
+    cmp     ax, 126
+    jae     .mc_i3
+    jmp     .mc_snake           # row 2: Snake
+.mc_i3:
+    cmp     ax, 150
+    jae     .mc_i4
+    jmp     .mc_prompt          # row 3: MS-DOS Prompt
+.mc_i4:
+    cmp     ax, 182
+    jae     .mc_close
+    jmp     .mc_reboot          # row 4: Shut Down
+.mc_paint:
+    mov     byte ptr [in_desktop], 1
+    call    mouse_off
+    jmp     do_paint
+.mc_snake:
+    mov     byte ptr [in_desktop], 1
+    call    mouse_off
+    mov     ax, 0x0003
+    int     0x10
+    jmp     do_snake
+.mc_prompt:
+    mov     byte ptr [in_desktop], 0
+    call    mouse_off
+    mov     ax, 0x0003
+    int     0x10
+    mov     ax, cs
+    mov     es, ax
+    jmp     shell_loop
+.mc_reboot:
+    call    mouse_off
+    jmp     do_reboot
+.mc_close:
+    # just repaint the desktop to erase the menu, then redraw the cursor
+    call    draw_desk
+    call    cursor_save
+    call    cursor_draw
+    ret
+
+# ============================================================================
+#  DAW - a PC-speaker step sequencer ("Beep Studio")
+#
+#  A 16-step x 8-pitch grid. Click a cell to place a note (monophonic - one
+#  note per column). P/Enter plays the sequence on the PC speaker, C clears,
+#  ESC exits. Reuses the mouse driver, cursor, and the PIT speaker code.
+# ============================================================================
+
+do_daw:
+    mov     ax, 0x0013
+    int     0x10
+    call    get_font
+    call    daw_clear
+    call    daw_draw
+    call    mouse_init
+    mov     word ptr [mouse_x], 156
+    mov     word ptr [mouse_y], 100
+    mov     byte ptr [mouse_btn], 0
+    mov     byte ptr [prev_btn], 0
+    mov     ax, [mouse_x]
+    mov     [cur_drawn_x], ax
+    mov     ax, [mouse_y]
+    mov     [cur_drawn_y], ax
+    call    cursor_save
+    call    cursor_draw
+.daw_loop:
+    mov     ah, 0x01
+    int     0x16
+    jz      .daw_btn
+    xor     ah, ah
+    int     0x16
+    cmp     al, 0x1B
+    je      .daw_exit
+    cmp     al, 'p'
+    je      .daw_play
+    cmp     al, 'P'
+    je      .daw_play
+    cmp     al, 0x0D
+    je      .daw_play
+    cmp     al, 'c'
+    je      .daw_clr
+    cmp     al, 'C'
+    je      .daw_clr
+.daw_btn:
+    mov     al, [mouse_btn]
+    and     al, 1
+    mov     [cur_btn], al
+    cmp     al, [prev_btn]
+    je      .daw_cur
+    mov     [prev_btn], al
+    test    byte ptr [cur_btn], 1
+    jz      .daw_cur
+    call    daw_click
+.daw_cur:
+    mov     ax, [mouse_x]
+    cmp     ax, [cur_drawn_x]
+    jne     .daw_redraw
+    mov     ax, [mouse_y]
+    cmp     ax, [cur_drawn_y]
+    jne     .daw_redraw
+    jmp     .daw_loop
+.daw_redraw:
+    call    cursor_restore
+    mov     ax, [mouse_x]
+    mov     [cur_drawn_x], ax
+    mov     ax, [mouse_y]
+    mov     [cur_drawn_y], ax
+    call    cursor_save
+    call    cursor_draw
+    jmp     .daw_loop
+.daw_play:
+    call    daw_play_seq
+    call    daw_draw
+    call    cursor_save
+    call    cursor_draw
+    jmp     .daw_loop
+.daw_clr:
+    call    daw_clear
+    call    daw_draw
+    call    cursor_save
+    call    cursor_draw
+    jmp     .daw_loop
+.daw_exit:
+    call    mouse_off
+    mov     ax, 0x0003
+    int     0x10
+    mov     ax, cs
+    mov     es, ax
+    jmp     shell_loop
+
+# daw_clear: empty every step.
+daw_clear:
+    xor     bx, bx
+.dcl_l:
+    cmp     bx, 16
+    jae     .dcl_d
+    mov     byte ptr [daw_grid + bx], 0xFF
+    inc     bx
+    jmp     .dcl_l
+.dcl_d:
+    ret
+
+# daw_draw: paint the grid (16 cols x 8 rows) and help text.
+daw_draw:
+    mov     word ptr [gx], 0
+    mov     word ptr [gy], 0
+    mov     word ptr [gw], 320
+    mov     word ptr [gh], 200
+    mov     byte ptr [gcolor], 0
+    call    grect
+    mov     byte ptr [gtcolor], 14
+    mov     word ptr [gpx], 32
+    mov     word ptr [gpy], 4
+    mov     si, offset daw_title
+    call    gtext_t
+    mov     word ptr [daw_col], 0
+.dd_col:
+    mov     ax, [daw_col]
+    cmp     ax, 16
+    jae     .dd_cdone
+    mov     word ptr [daw_row], 0
+.dd_row:
+    mov     ax, [daw_row]
+    cmp     ax, 8
+    jae     .dd_rdone
+    mov     ax, [daw_col]
+    mov     bx, 16
+    mul     bx
+    add     ax, 32
+    mov     [gx], ax
+    mov     ax, [daw_row]
+    mov     bx, 18
+    mul     bx
+    add     ax, 20
+    mov     [gy], ax
+    mov     word ptr [gw], 15
+    mov     word ptr [gh], 17
+    mov     bx, [daw_col]
+    mov     al, [daw_grid + bx]
+    mov     bl, [daw_row]
+    cmp     al, bl
+    jne     .dd_off
+    mov     byte ptr [gcolor], 10
+    jmp     .dd_fill
+.dd_off:
+    mov     byte ptr [gcolor], 8
+.dd_fill:
+    call    grect
+    inc     word ptr [daw_row]
+    jmp     .dd_row
+.dd_rdone:
+    inc     word ptr [daw_col]
+    jmp     .dd_col
+.dd_cdone:
+    mov     byte ptr [gtcolor], 15
+    mov     word ptr [gpx], 16
+    mov     word ptr [gpy], 178
+    mov     si, offset daw_help
+    call    gtext_t
+    ret
+
+# daw_click: toggle the note under the cursor.
+daw_click:
+    mov     ax, [mouse_x]
+    cmp     ax, 32
+    jb      .dck_ret
+    sub     ax, 32
+    cmp     ax, 256
+    jae     .dck_ret
+    mov     bl, 16
+    div     bl
+    mov     dl, al                  # column
+    mov     ax, [mouse_y]
+    cmp     ax, 20
+    jb      .dck_ret
+    sub     ax, 20
+    cmp     ax, 144
+    jae     .dck_ret
+    mov     bl, 18
+    div     bl
+    mov     dh, al                  # row
+    mov     bl, dl
+    xor     bh, bh
+    mov     al, [daw_grid + bx]
+    cmp     al, dh
+    jne     .dck_set
+    mov     byte ptr [daw_grid + bx], 0xFF
+    jmp     .dck_redraw
+.dck_set:
+    mov     [daw_grid + bx], dh
+.dck_redraw:
+    call    daw_draw
+    call    cursor_save
+    call    cursor_draw
+.dck_ret:
+    ret
+
+# daw_play_seq: play each step's note on the PC speaker, with a step marker.
+daw_play_seq:
+    mov     word ptr [daw_col], 0
+.dps_l:
+    mov     ax, [daw_col]
+    cmp     ax, 16
+    jae     .dps_done
+    mov     ah, 0x01
+    int     0x16
+    jnz     .dps_abort
+    # clear marker row, then draw the current-step marker
+    mov     word ptr [gx], 32
+    mov     word ptr [gy], 14
+    mov     word ptr [gw], 256
+    mov     word ptr [gh], 4
+    mov     byte ptr [gcolor], 0
+    call    grect
+    mov     ax, [daw_col]
+    mov     bx, 16
+    mul     bx
+    add     ax, 32
+    mov     [gx], ax
+    mov     word ptr [gy], 14
+    mov     word ptr [gw], 15
+    mov     word ptr [gh], 4
+    mov     byte ptr [gcolor], 14
+    call    grect
+    # play the note for this step (0xFF = rest)
+    mov     bx, [daw_col]
+    mov     al, [daw_grid + bx]
+    cmp     al, 0xFF
+    je      .dps_rest
+    mov     bl, al
+    xor     bh, bh
+    shl     bx, 1
+    mov     cx, [daw_freq + bx]
+    call    sound_on
+    jmp     .dps_dur
+.dps_rest:
+    call    sound_off
+.dps_dur:
+    mov     word ptr [tmp_dur], 170
+    call    delay_ms
+    call    sound_off
+    inc     word ptr [daw_col]
+    jmp     .dps_l
+.dps_abort:
+    xor     ah, ah
+    int     0x16
+.dps_done:
+    call    sound_off
+    ret
+
 # ---- routines ----
 
 # cls: set 80x25 colour text mode (clears the screen as a side effect).
@@ -3660,11 +5604,12 @@ match:
 
 banner:
     .ascii  "===========================================\r\n"
-    .ascii  " ZudaDOS 1.4  -  bare-metal real-mode shell\r\n"
+    .ascii  " ZudaDOS 10  -  bare-metal real-mode shell\r\n"
     .ascii  "===========================================\r\n"
     .asciz  "Type HELP for a list of commands.\r\n\r\n"
 
 prompt:     .asciz "A:\\> "
+boot_msg:   .asciz "Starting desktop...  (press ESC for the DOS prompt)\r\n"
 
 msg_help:
     .ascii  "Commands:\r\n"
@@ -3681,10 +5626,20 @@ msg_help:
     .ascii  "  EDIT    Word processor (F2 save, F3 load, ESC exit)\r\n"
     .ascii  "  ELIZA   Talk to the DOCTOR chatbot (type BYE to leave)\r\n"
     .ascii  "  BASIC   QBASIC-flavored BASIC interpreter (RUN/LIST/NEW/BYE)\r\n"
+    .ascii  "  GUI     Graphical desktop (VGA mode 13h)\r\n"
+    .ascii  "  PAINT   Mouse paint program (C clear, ESC quit)\r\n"
+    .ascii  "  DESKTOP Windows 95-style desktop with a Start menu\r\n"
+    .ascii  "  CALC    Evaluate an expression (CALC 2+3*4)\r\n"
+    .ascii  "  MEM     Show memory   SYSINFO  System summary\r\n"
+    .ascii  "  BEEP    Speaker beep  UPTIME   Time since midnight\r\n"
+    .ascii  "  DICE    Roll a die    GUESS    Number guessing game\r\n"
+    .ascii  "  COWSAY  ASCII cow     FORTUNE  Random quote\r\n"
+    .ascii  "  MATRIX  Digital rain (any key to stop)\r\n"
+    .ascii  "  DAW     PC-speaker step sequencer (mouse)\r\n"
     .ascii  "  REBOOT  Restart the machine\r\n"
     .asciz  "  HALT    Stop the CPU\r\n"
 
-msg_ver:    .asciz "ZudaDOS [Version 1.4]\r\n"
+msg_ver:    .asciz "ZudaDOS [Version 10]\r\n"
 
 msg_dir:
     .ascii  " Volume in drive A is ZUDADOS\r\n"
@@ -3732,6 +5687,111 @@ kw_play:    .asciz "PLAY"
 kw_edit:    .asciz "EDIT"
 kw_eliza:   .asciz "ELIZA"
 kw_basic:   .asciz "BASIC"
+kw_gui:     .asciz "GUI"
+kw_paint:   .asciz "PAINT"
+kw_desktop: .asciz "DESKTOP"
+kw_calc:    .asciz "CALC"
+kw_mem:     .asciz "MEM"
+kw_beep:    .asciz "BEEP"
+kw_uptime:  .asciz "UPTIME"
+kw_dice:    .asciz "DICE"
+kw_cowsay:  .asciz "COWSAY"
+kw_fortune: .asciz "FORTUNE"
+kw_sysinfo: .asciz "SYSINFO"
+kw_matrix:  .asciz "MATRIX"
+kw_guess:   .asciz "GUESS"
+kw_daw:     .asciz "DAW"
+
+daw_title:  .asciz "ZudaDOS DAW - Beep Studio"
+daw_help:   .asciz "Click=note  P=play  C=clear  ESC=exit"
+daw_freq:   .word 1047, 988, 880, 784, 698, 659, 587, 523
+
+msg_calc:    .asciz "= "
+msg_calcerr: .asciz "Bad expression\r\n"
+msg_mem1:    .asciz "Conventional memory: "
+msg_mem2:    .asciz "Extended memory: "
+msg_kb:      .asciz " KB\r\n"
+msg_uptime:  .asciz "Up "
+msg_sec:     .asciz " seconds (since midnight)\r\n"
+msg_uplong:  .asciz "over an hour\r\n"
+msg_dice:    .asciz "You rolled a "
+cow_top:     .asciz " _________________\r\n"
+cow_body:
+    .ascii  "        \\   ^__^\r\n"
+    .ascii  "         \\  (oo)\\_______\r\n"
+    .ascii  "            (__)\\       )\\/\\\r\n"
+    .ascii  "                ||----w |\r\n"
+    .asciz  "                ||     ||\r\n"
+fortune_art:
+    .ascii  "      _.-'''''-._\r\n"
+    .ascii  "    .'  .     .  '.\r\n"
+    .ascii  "   /   ( o ) ( o ) \\\r\n"
+    .ascii  "   |       <       |\r\n"
+    .ascii  "   |    '._____.'   |\r\n"
+    .ascii  "    \\             /\r\n"
+    .ascii  "     '._       _.'\r\n"
+    .ascii  "    .-''-#####-''-.\r\n"
+    .asciz  " The orb whispers...\r\n"
+fortune_tbl: .word f_1, f_2, f_3, f_4, f_5, f_6
+f_1:         .asciz "The best way to predict the future is to invent it."
+f_2:         .asciz "It works on my machine."
+f_3:         .asciz "There are 10 kinds of people: those who get binary."
+f_4:         .asciz "Real programmers count from zero."
+f_5:         .asciz "Ship it and let reality file the bug report."
+f_6:         .asciz "640K ought to be enough for anybody."
+msg_gintro:  .asciz "I'm thinking of a number 1-100. (Q to quit)\r\n"
+msg_gprompt: .asciz "Guess: "
+msg_ghigh:   .asciz "Too high!\r\n"
+msg_glow:    .asciz "Too low!\r\n"
+msg_gwin:    .asciz "You got it!\r\n"
+
+ds_start:   .asciz "Start"
+ds_icon1:   .asciz "My PC"
+ds_icon2:   .asciz "Trash"
+ds_wtitle:  .asciz "ZudaDOS 95"
+ds_w1:      .asciz "Welcome to"
+ds_w2:      .asciz "ZudaDOS 95!"
+ds_w3:      .asciz "Click Start."
+ds_m1:      .asciz "Paint"
+ds_m2:      .asciz "Snake"
+ds_m3:      .asciz "MS-DOS"
+ds_m4:      .asciz "Shut Down"
+ds_hint:    .asciz "ZudaDOS 10  -  click or drag an icon"
+ic_colors:  .byte 10, 12, 15, 14, 11, 2, 13, 8, 9
+ic_labels:  .word icl_0, icl_1, icl_2, icl_3, icl_4, icl_5, icl_6, icl_7, icl_8
+icl_0:      .asciz "Snake"
+icl_1:      .asciz "Paint"
+icl_2:      .asciz "Edit"
+icl_3:      .asciz "BASIC"
+icl_4:      .asciz "Eliza"
+icl_5:      .asciz "Matrix"
+icl_6:      .asciz "Guess"
+icl_7:      .asciz "MS-DOS"
+icl_8:      .asciz "DAW"
+
+gui_title:  .asciz "ZudaDOS"
+gui_l1:     .asciz "Welcome to ZudaDOS 10"
+gui_l2:     .asciz "A real OS in ~24 KB."
+gui_l3:     .asciz "Graphics + PS/2 mouse"
+gui_l4:     .asciz "Move the pointer!"
+gui_l5:     .asciz "Click [X] or a key."
+gui_x:      .asciz "x"
+gui_task:   .asciz "ZudaDOS  *  GUI desktop"
+
+# Arrow cursor: 8 wide x 12 tall, 0=transparent 1=black 2=white.
+cur_sprite:
+    .byte 1,0,0,0,0,0,0,0
+    .byte 1,1,0,0,0,0,0,0
+    .byte 1,2,1,0,0,0,0,0
+    .byte 1,2,2,1,0,0,0,0
+    .byte 1,2,2,2,1,0,0,0
+    .byte 1,2,2,2,2,1,0,0
+    .byte 1,2,2,2,2,2,1,0
+    .byte 1,2,2,2,1,1,1,0
+    .byte 1,2,1,2,2,1,0,0
+    .byte 1,1,0,1,2,2,1,0
+    .byte 1,0,0,0,1,2,1,0
+    .byte 0,0,0,0,0,1,1,0
 
 msg_edit_exit: .asciz "Left the editor.\r\n"
 edit_status:   .asciz " ZudaDOS EDIT   F2 Save  F3 Load  ESC Exit  "
@@ -3912,6 +5972,8 @@ kw_NOT:     .asciz "NOT"
 kw_LEN:     .asciz "LEN"
 kw_ASC:     .asciz "ASC"
 kw_CHR:     .asciz "CHR"
+kw_RND:     .asciz "RND"
+kw_ABS:     .asciz "ABS"
 
 # ---- mutable state (BSS-style, zero-initialised in the image) ----
 boot_drive: .byte 0
@@ -4007,5 +6069,65 @@ str_store:  .space 1024         # 16 string slots x 64 bytes
 lbl_names:  .space 288          # 32 labels x 9-byte names
 lbl_line:   .space 64
 prog_buf:   .space 4096
+
+# GUI state
+gx:         .word 0
+gy:         .word 0
+gw:         .word 0
+gh:         .word 0
+gcolor:     .byte 0
+grow:       .byte 0
+gcol:       .byte 0
+gtcolor:    .byte 0
+
+# font engine state (transparent 8x8 text)
+font_seg:   .word 0
+font_off:   .word 0
+gpx:        .word 0
+gpy:        .word 0
+glyphbuf:   .space 8
+
+# mouse / cursor state
+mouse_x:    .word 0
+mouse_y:    .word 0
+mouse_btn:  .byte 0
+mpkt_idx:   .byte 0
+mpkt0:      .byte 0
+mpkt1:      .byte 0
+mpkt2:      .byte 0
+cur_drawn_x: .word 0
+cur_drawn_y: .word 0
+cur_bg:     .space 96
+
+# PAINT state
+current_color: .byte 0
+painting:   .byte 0
+prev_btn:   .byte 0
+cur_btn:    .byte 0
+
+# DESKTOP / Win95 state
+btx:        .word 0
+bty:        .word 0
+btw:        .word 0
+bth:        .word 0
+bev_tl:     .byte 0
+bev_br:     .byte 0
+menu_open:  .byte 0
+icon_i:     .word 0
+drag_icon:  .word -1
+grab_dx:    .word 0
+grab_dy:    .word 0
+press_mx:   .word 0
+press_my:   .word 0
+icon_x:     .space 18
+icon_y:     .space 18
+clockbuf:   .space 8
+guess_target: .word 0
+daw_col:    .word 0
+daw_row:    .word 0
+daw_grid:   .space 16
+in_desktop: .byte 0
+desktop_inited: .byte 0
+boot_ticks: .word 0
 
 cmdbuf:     .space 128

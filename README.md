@@ -3,11 +3,13 @@
 A hand-rolled, bare-metal **16-bit operating system** in the spirit of early DOS.
 No kernel framework, no libc, no emulator dependency — just a 512-byte boot
 sector and a real-mode kernel that talks to the hardware through BIOS
-interrupts, exactly the way MS-DOS did.
+interrupts, exactly the way MS-DOS did. It has a command shell, games, a music
+player, a word processor, a BASIC interpreter, the ELIZA chatbot, and a
+**graphical mouse-driven desktop** — all in about 24 KB.
 
 ```
 ===========================================
- ZudaDOS 1.0  -  bare-metal real-mode shell
+ ZudaDOS 10  -  bare-metal real-mode shell
 ===========================================
 Type HELP for a list of commands.
 
@@ -45,6 +47,20 @@ booted into.
 | `EDIT`   | Word processor (`F2` save, `F3` load, `ESC` exit) |
 | `ELIZA`  | Talk to the DOCTOR chatbot (type `BYE` to leave) |
 | `BASIC`  | QBASIC-flavored BASIC interpreter (`RUN`/`LIST`/`NEW`/`BYE`) |
+| `GUI`    | Graphical desktop with a working mouse pointer |
+| `PAINT`  | Mouse paint program — draw, pick colors (`C` clear, `ESC` quit) |
+| `DESKTOP`| Windows 95-style desktop: Start menu, taskbar clock, 3D windows |
+| `CALC e` | Evaluate an integer expression (`CALC 2+3*4` → 14) |
+| `MEM`    | Conventional + extended memory       |
+| `SYSINFO`| Version, memory, and time summary    |
+| `BEEP`   | A short PC-speaker tone              |
+| `UPTIME` | Seconds since midnight (BIOS timer)  |
+| `DICE`   | Roll a six-sided die                 |
+| `GUESS`  | Number-guessing game (1–100)         |
+| `COWSAY x`| ASCII cow says your text            |
+| `FORTUNE`| A random one-liner                   |
+| `MATRIX` | Green "digital rain" (any key stops) |
+| `DAW`    | PC-speaker step sequencer — click a grid to compose, `P` to play |
 | `REBOOT` | Restart the machine                  |
 | `HALT`   | Stop the CPU                         |
 
@@ -99,6 +115,53 @@ writing survives a reboot or power-off.
 > and real floppies are the surest targets for save/load. (A future version
 > could use int 0x13 LBA extensions to be geometry-independent.)
 
+### GUI (a graphical mouse-driven desktop)
+
+ZudaDOS isn't only text. `GUI` switches into **VGA mode 13h** (320×200, 256
+colors), paints a desktop — a framed window with a blue title bar, desktop
+icons, and a taskbar — and brings up a **real mouse pointer**.
+
+The mouse is the interesting part: there's no `int 0x33` on bare metal, so it's
+a hand-written **PS/2 driver**. It programs the 8042 keyboard/mouse controller
+(`0x60`/`0x64`), installs an **IRQ12 interrupt handler** at IVT vector `0x74`,
+unmasks the PIC, and enables the aux device's data reporting. The ISR assembles
+the 3-byte movement packets and updates the pointer position; an 8×12 arrow
+sprite is drawn with **save-under** (it stashes the pixels beneath it so it
+leaves no trail). Move the pointer around, **click the red [X]** in the title
+bar (real hit-testing) or press any key to return to the text shell.
+
+That puts ZudaDOS at early-GUI — Windows 3.1 / Microsoft Bob — *level*: a
+graphical, windowed, mouse-operated shell. (Not binary-compatible with anything,
+and the windows don't drag yet — that's the next step.)
+
+### DESKTOP (a Windows 95-style shell)
+
+`DESKTOP` brings up a Win95-style desktop. To be clear about what this *is*:
+it is **not** the actual Windows 95 — a 32-bit, preemptively-multitasking
+protected-mode OS — which isn't buildable as hand-written real-mode assembly.
+It's the recognizable Win95 **desktop experience**, built on the graphics +
+mouse engine:
+
+- A grey **taskbar** with a raised, 3D-beveled **Start button** and a **clock**
+  in a sunken panel (read from the RTC).
+- A **Start menu** that pops up when you click Start, with a blue branding
+  stripe and launchable items: **Paint**, **Snake**, **MS-DOS Prompt**, and
+  **Shut Down**. Clicking an item actually launches that app; clicking off the
+  menu closes it.
+- Desktop icons and a 3D-beveled window with a blue title bar.
+- The same hand-written PS/2 mouse pointer drives all of it.
+
+Click **Start**, pick **Paint**, and you're drawing — launched from a Start
+menu, on an OS that boots from a 512-byte sector. Press any key to exit to DOS.
+
+### PAINT (a Paintbrush-style drawing program)
+
+The Windows 3.1 move: a **paint program**. `PAINT` drops you onto a white canvas
+with a **16-color palette** along the bottom. Hold the left mouse button to draw
+with a 3×3 brush; click a swatch to change color; press **C** to clear the
+canvas and **ESC** to quit. It reuses the GUI's PS/2 mouse driver and arrow
+cursor — the cursor hides while you draw so your strokes show through.
+
 ### BASIC (a structured, QBASIC-flavored interpreter)
 
 A real BASIC interpreter — write a program, `RUN` it. **No line numbers**: it's
@@ -129,8 +192,8 @@ newline), `LET`/implicit assignment, `INPUT`, `IF cond THEN <statement>`,
 (`name:`), `CLS`, `REM` / `'`, `END`/`STOP`.
 
 **Variables:** integer numerics with multi-char names (`COUNT`, `X1`), and
-string variables (`A$`). **Functions:** `LEN(s$)`, `ASC(s$)`, `CHR$(n)`, plus
-`+` to concatenate strings.
+string variables (`A$`). **Functions:** `LEN(s$)`, `ASC(s$)`, `CHR$(n)`,
+`RND(n)` (random 1..n), `ABS(n)`, plus `+` to concatenate strings.
 
 **Editor commands:** `RUN`, `LIST`, `NEW`, `BYE`. You type program lines at the
 prompt; they accumulate until you `RUN`.
@@ -217,6 +280,30 @@ This produces **`zudados.img`**, a 1.44 MB bootable floppy image:
 
 `make clean` removes build artifacts.
 
+### Building on Windows (PowerShell)
+
+You still need GNU binutils (`as`, `ld`, `objcopy`). Two ways:
+
+**A. WSL** — easiest, the Makefile works unchanged:
+
+```powershell
+wsl --install                       # one-time (reboots)
+# then, in the WSL shell:
+sudo apt install -y build-essential binutils
+cd /mnt/c/path/to/ZudaDOS && make
+```
+
+**B. Native PowerShell** — install binutils via [MSYS2](https://www.msys2.org)
+(`pacman -S binutils`), add `C:\msys64\usr\bin` to your `PATH`, then run the
+included script (it does the assemble/link and builds the image without `dd`):
+
+```powershell
+.\build.ps1
+```
+
+> If `ld` reports `unrecognized emulation mode: elf_i386`, your binutils was
+> built for PE only — use the WSL route instead.
+
 ## Run it on bare metal
 
 > ⚠️ This is a **legacy BIOS / MBR** boot image. It boots on real machines with
@@ -239,6 +326,11 @@ and select the USB drive.
 sudo dd if=zudados.img of=/dev/fd0 bs=512 conv=fsync
 ```
 
+**On Windows:** don't raw-write the disk from PowerShell (easy to hit the wrong
+drive). Use a GUI imager — point **[Rufus](https://rufus.ie)** or
+**[balenaEtcher](https://etcher.balena.io)** at `zudados.img` and your USB
+stick. (In Rufus, pick "DD Image" mode if prompted.)
+
 ## Run it in a VM (optional)
 
 Any emulator that boots a floppy image works:
@@ -247,6 +339,12 @@ Any emulator that boots a floppy image works:
 qemu-system-i386 -fda zudados.img      # or: make run
 # VirtualBox: attach zudados.img as a floppy controller image
 # Bochs: floppya: 1_44=zudados.img, status=inserted
+```
+
+On Windows, install QEMU and run the same command from PowerShell:
+
+```powershell
+qemu-system-i386 -fda zudados.img
 ```
 
 ## How the handoff works

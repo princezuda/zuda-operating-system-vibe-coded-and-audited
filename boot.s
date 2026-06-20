@@ -70,6 +70,16 @@ _start:
     int     0x13
     jc      disk_err
 
+    mov     bx, 53 * 512        # track D: cyl 1 head 1 (LBA 54..71)
+    mov     ah, 0x02
+    mov     al, 18
+    mov     ch, 1               # cylinder 1
+    mov     cl, 1
+    mov     dh, 1               # head 1
+    mov     dl, [boot_drive]
+    int     0x13
+    jc      disk_err
+
     mov     si, offset msg_ok
     call    print
 
