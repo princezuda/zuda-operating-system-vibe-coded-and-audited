@@ -18,9 +18,9 @@ Type HELP for a list of commands.
 A:\>
 ```
 
-https://github.com/user-attachments/assets/a7986de7-d848-4325-8d84-7088e6482117
-
 ## What it is
+
+https://github.com/user-attachments/assets/a7986de7-d848-4325-8d84-7088e6482117
 
 - **`boot.s`** — the boot sector (stage 1). The BIOS loads it at `0x7C00`. It
   resets the disk, reads the kernel off the disk with `int 0x13`, and far-jumps
