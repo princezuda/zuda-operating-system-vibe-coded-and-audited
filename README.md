@@ -14,11 +14,11 @@ player, a word processor, a BASIC interpreter, the ELIZA chatbot, and a
 Type HELP for a list of commands.
 
 
-https://github.com/user-attachments/assets/a7986de7-d848-4325-8d84-7088e6482117
-
 
 A:\>
 ```
+
+https://github.com/user-attachments/assets/a7986de7-d848-4325-8d84-7088e6482117
 
 ## What it is
 
